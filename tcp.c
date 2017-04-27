@@ -11,6 +11,7 @@
 #include <string.h>
 
 
+  SSL_CTX *ctx;
 void init_openssl()
 {
     SSL_load_error_strings();
@@ -39,7 +40,7 @@ SSL_CTX *create_context()
     return ctx;
 }
 
-void configure_context(SSL_CTX *ctx)
+void configure_context()
 {
     SSL_CTX_set_ecdh_auto(ctx, 1);
 
@@ -55,27 +56,89 @@ void configure_context(SSL_CTX *ctx)
     }
 }
 
+void connection_handler(int client)
+{
+
+	SSL *ssl;
+	char buffer[4000];
+	int n;
+	int ssl_status=0;
+	/* If connection is established then start communicating */
+	bzero(buffer,4000);
+	//n = read( client,buffer,4000 );
+	ssl = SSL_new(ctx);
+	SSL_set_fd(ssl, client);
+
+	if (SSL_accept(ssl) <= 0) {
+	ERR_print_errors_fp(stderr);
+	perror("NO SSL reading from socket");
+
+	n= read(client,buffer,sizeof(buffer));
+	}
+	else {
+
+	ssl_status=1;
+	n=SSL_read(ssl, buffer, sizeof(buffer));
+
+	}
+
+	if (n < 0) {
+	perror("ERROR reading from socket");
+
+	}
+	int len=strlen(buffer);
+	printf("length of buffer %d",len);
+	printf("\n%s\n",buffer);
+
+	/*
+	* tokenize the content received from the client
+	*  parse json and perform verification.
+	*/
+	char *token = NULL;
+	token = strtok(buffer, "\n");
+	while (token)
+	{
+	printf("Current token: %s.\n", token);
+	token = strtok(NULL, "\n");
+	}
+
+	char response[1000];
+	strcpy(response,"HTTP/1.1 200 OK\nContent-length: 47\nContent-Type: text/html\n\n<html><body><H1>Hello Dev</H1></body></html>");
+
+
+	/*
+	* send the response in josn, html or other formats
+	*/
+
+	if(ssl_status)
+	n=SSL_write(ssl, response, sizeof(response));
+	else
+	n=write(client,response,sizeof(response));
+	SSL_free(ssl);
+
+	if (n < 0)
+	{
+	perror("ERROR writing to socket");
+
+	}
+
+}
 
 
 int main( int argc, char *argv[] )
 {
    int sockfd, client, portno, clilen;
-   char buffer[4000];
    struct sockaddr_in serv_addr, cli_addr;
    int  n;
    int ssl_status=0;
-
-   SSL_CTX *ctx;
-
-       init_openssl();
-       ctx = create_context();
-
-       configure_context(ctx);
+   pthread_t thread;
+   init_openssl();
+   ctx = create_context();
+   configure_context();
 
 
    /* First call to socket() function */
    sockfd = socket(AF_INET, SOCK_STREAM, 0);
-
    if (sockfd < 0) {
       perror("ERROR opening socket");
       exit(1);
@@ -101,75 +164,26 @@ int main( int argc, char *argv[] )
 
    listen(sockfd,5);
    clilen = sizeof(cli_addr);
+   int i=0;
    while(1)
    {
    /* Accept actual connection from the client */
-	   SSL *ssl;
-	   ssl_status=0;
-	   client = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen);
+
+	client = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen);
 
     if (client < 0)
     {
       perror("ERROR on accept");
-      exit(1);
-    }
-
-   /* If connection is established then start communicating */
-   bzero(buffer,4000);
-   //n = read( client,buffer,4000 );
-   ssl = SSL_new(ctx);
-   SSL_set_fd(ssl, client);
-
-   if (SSL_accept(ssl) <= 0) {
-	  ERR_print_errors_fp(stderr);
-	  perror("NO SSL reading from socket");
-
-	  n= read(client,buffer,sizeof(buffer));
-   }
-   else {
-
-	  ssl_status=1;
-	  n=SSL_read(ssl, buffer, sizeof(buffer));
-
-   }
-
-   if (n < 0) {
-      perror("ERROR reading from socket");
-
-   }
-  int len=strlen(buffer);
-  printf("length of buffer %d",len);
-  printf("\n%s\n",buffer);
-
-	/*
-	* tokenize the content received from the client
-	*  parse json and perform verification.
-	*/
-	char *token = NULL;
-	token = strtok(buffer, "\n");
-	while (token)
-	{
-	printf("Current token: %s.\n", token);
-	token = strtok(NULL, "\n");
-	}
-	char response[1000];
-	strcpy(response,"HTTP/1.1 200 OK\nContent-length: 47\nContent-Type: text/html\n\n<html><body><H1>Hello Dev</H1></body></html>");
-	/*
-	* send the response in josn, html or other formats
-	*/
-	if(ssl_status)
-	n=SSL_write(ssl, response, sizeof(response));
-	else
-	n=write(client,response,sizeof(response));
-	SSL_free(ssl);
-
-	if (n < 0)
-	{
-	perror("ERROR writing to socket");
 
     }
+    if( pthread_create( &thread , NULL ,  connection_handler , client) < 0)
+           {
+               perror("could not create thread");
+               return 1;
+           }
 
- }
+
+   }
    close(sockfd);
    cleanup_openssl();
    return 0;
