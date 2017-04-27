@@ -1,16 +1,77 @@
 #include <stdio.h>
 #include <stdlib.h>
-
+#include <unistd.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
 #include"http_parser.h"
 #include <string.h>
 
-int main( int argc, char *argv[] ) {
-   int sockfd, newsockfd, portno, clilen;
+
+void init_openssl()
+{
+    SSL_load_error_strings();
+    OpenSSL_add_ssl_algorithms();
+}
+
+void cleanup_openssl()
+{
+    EVP_cleanup();
+}
+
+SSL_CTX *create_context()
+{
+    const SSL_METHOD *method;
+    SSL_CTX *ctx;
+
+    method = SSLv23_server_method();
+
+    ctx = SSL_CTX_new(method);
+    if (!ctx) {
+	perror("Unable to create SSL context");
+	ERR_print_errors_fp(stderr);
+	exit(EXIT_FAILURE);
+    }
+
+    return ctx;
+}
+
+void configure_context(SSL_CTX *ctx)
+{
+    SSL_CTX_set_ecdh_auto(ctx, 1);
+
+    /* Set the key and cert */
+    if (SSL_CTX_use_certificate_file(ctx, "cert.pem", SSL_FILETYPE_PEM) <= 0) {
+        ERR_print_errors_fp(stderr);
+	exit(EXIT_FAILURE);
+    }
+
+    if (SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM) <= 0 ) {
+        ERR_print_errors_fp(stderr);
+	exit(EXIT_FAILURE);
+    }
+}
+
+
+
+int main( int argc, char *argv[] )
+{
+   int sockfd, client, portno, clilen;
    char buffer[4000];
    struct sockaddr_in serv_addr, cli_addr;
    int  n;
+   int ssl_status=0;
+
+   SSL_CTX *ctx;
+
+       init_openssl();
+       ctx = create_context();
+
+       configure_context(ctx);
+
 
    /* First call to socket() function */
    sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -40,58 +101,76 @@ int main( int argc, char *argv[] ) {
 
    listen(sockfd,5);
    clilen = sizeof(cli_addr);
-   while(1){
+   while(1)
+   {
    /* Accept actual connection from the client */
-   newsockfd = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen);
+	   SSL *ssl;
+	   ssl_status=0;
+	   client = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen);
 
-   if (newsockfd < 0) {
+    if (client < 0)
+    {
       perror("ERROR on accept");
       exit(1);
-   }
+    }
 
    /* If connection is established then start communicating */
    bzero(buffer,4000);
-   n = read( newsockfd,buffer,4000 );
+   //n = read( client,buffer,4000 );
+   ssl = SSL_new(ctx);
+   SSL_set_fd(ssl, client);
+
+   if (SSL_accept(ssl) <= 0) {
+	  ERR_print_errors_fp(stderr);
+	  perror("NO SSL reading from socket");
+
+	  n= read(client,buffer,sizeof(buffer));
+   }
+   else {
+
+	  ssl_status=1;
+	  n=SSL_read(ssl, buffer, sizeof(buffer));
+
+   }
 
    if (n < 0) {
       perror("ERROR reading from socket");
-      exit(1);
-   }
 
+   }
   int len=strlen(buffer);
   printf("length of buffer %d",len);
+  printf("\n%s\n",buffer);
 
-	   printf("\n%s\n",buffer);
+	/*
+	* tokenize the content received from the client
+	*  parse json and perform verification.
+	*/
+	char *token = NULL;
+	token = strtok(buffer, "\n");
+	while (token)
+	{
+	printf("Current token: %s.\n", token);
+	token = strtok(NULL, "\n");
+	}
+	char response[1000];
+	strcpy(response,"HTTP/1.1 200 OK\nContent-length: 47\nContent-Type: text/html\n\n<html><body><H1>Hello Dev</H1></body></html>");
+	/*
+	* send the response in josn, html or other formats
+	*/
+	if(ssl_status)
+	n=SSL_write(ssl, response, sizeof(response));
+	else
+	n=write(client,response,sizeof(response));
+	SSL_free(ssl);
 
-	   /*
-	    * tokenize the content received from the client
-	    *  parse json and perform verification.
-	    */
-	   char *token = NULL;
-	   token = strtok(buffer, "\n");
-	       while (token) {
-	           printf("Current token: %s.\n", token);
-	           token = strtok(NULL, "\n");
-	       }
-       char response[1000];
-       strcpy(response,"HTTP/1.1 200 OK\nContent-length: 47\nContent-Type: text/json\n\n<html><body><H1>Hello Dev</H1></body></html>");
-       /*
-        * send the response in josn, html or other formats
-        */
-       write(newsockfd,response,sizeof(response));
-       if (n < 0) {
-        perror("ERROR writing to socket");
-        exit(1);
-     }
+	if (n < 0)
+	{
+	perror("ERROR writing to socket");
+
+    }
 
  }
-   /* Write a response to the client */
- //  n = write(newsockfd,"I got your message",18);
-
-  // if (n < 0) {
-    //  perror("ERROR writing to socket");
-     // exit(1);
-   //}
-
+   close(sockfd);
+   cleanup_openssl();
    return 0;
 }
